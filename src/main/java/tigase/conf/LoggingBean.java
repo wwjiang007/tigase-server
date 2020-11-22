@@ -25,14 +25,9 @@ import tigase.util.log.LogFormatter;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.nio.charset.Charset;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Optional;
-import java.util.logging.ConsoleHandler;
-import java.util.logging.FileHandler;
-import java.util.logging.Level;
-import java.util.logging.LogManager;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.logging.*;
 import java.util.stream.Stream;
 
 /**
@@ -58,6 +53,8 @@ public class LoggingBean
 	@ConfigField(desc = "Log thread dump on shutdown", alias = "shutdown-thread-dump")
 	private boolean shutdownThreadDump = true;
 
+	private final static Logger log = Logger.getLogger(LoggingBean.class.getName());
+
 	public LoggingBean() {
 		HashMap<String, HashMap<String, Object>> loggers = new HashMap<>();
 		loggers.computeIfAbsent("tigase.kernel.core.Kernel", (name) -> {
@@ -69,6 +66,70 @@ public class LoggingBean
 		setHandlers(new HashMap<>());
 
 		rootHandlers = new String[]{ConsoleHandler.class.getCanonicalName(), FileHandler.class.getCanonicalName()};
+	}
+
+	public synchronized Map<String,Level> getPackageLoggingLevels() {
+		// how to merge debug with loggers? shouldn't that be unified??
+		// should we move "tigase" to "debug" and leave rest with loggers??
+		// we should also prepare a good merging mechanism
+		Stream<String> debugStream = Stream.concat(
+				Optional.ofNullable(debug).map(Arrays::stream).orElse(Stream.empty()).map(s -> "tigase." + s),
+				Optional.ofNullable(debugPackages).map(Arrays::stream).orElse(Stream.empty()));
+
+		Map<String, Level> result = new HashMap<>();
+		debugStream.forEach(p -> result.put(p, Level.ALL));
+
+		for (String p : loggers.keySet()) {
+			Optional.ofNullable(loggers.get(p)).map(v -> v.get("level")).filter(String.class::isInstance).map(v -> {
+				try {
+					return Level.parse((String) v);
+				} catch (IllegalArgumentException ex) {
+					return null;
+				}
+			}).filter(Objects::nonNull).ifPresent(level -> result.put(p, level));
+		}
+
+		log.log(Level.FINE, "Currently configured loggers: " + result);
+
+		return result;
+	}
+
+	public synchronized void setPackageLoggingLevel(String packageName, Level level) throws RuntimeException {
+		log.log(Level.CONFIG, "Setting log level for package: {0} to {1}", new Object[]{packageName, level});
+		if (packageName.startsWith("tigase.")) {
+			String part = packageName.substring("tigase.".length());
+			Optional.ofNullable(debug)
+					.map(Arrays::stream)
+					.map(s -> s.filter(name -> !part.equals(name)))
+					.map(s -> s.toArray(String[]::new))
+					.ifPresent(value -> this.debug = value);
+		}
+		Optional.ofNullable(debugPackages)
+				.map(Arrays::stream)
+				.map(s -> s.filter(name -> !packageName.equals(name)))
+				.map(s -> s.toArray(String[]::new))
+				.ifPresent(value -> this.debugPackages = value);
+
+		HashMap<String, Object> value = loggers.get(packageName);
+		if (value == null) {
+			if (level != Level.OFF) {
+				value = new HashMap<>();
+				value.put("level", level.getName());
+				loggers.put(packageName, value);
+			}
+		} else {
+			if (level == Level.OFF) {
+				if (value.size() == 1) {
+					loggers.remove(packageName);
+				} else {
+					value.remove("level");
+				}
+			} else {
+				value.put("level", level.getName());
+			}
+		}
+
+		beanConfigurationChanged(Collections.emptySet());
 	}
 
 	public void setLoggers(HashMap<String, HashMap<String, Object>> loggers) {
@@ -122,19 +183,13 @@ public class LoggingBean
 
 		sb.append(".level=").append(rootLevel.getName()).append("\n");
 
-		Optional.ofNullable(debug).ifPresent(names -> {
-			Stream.of(names).forEach(name -> {
-				sb.append("tigase.").append(name).append(".level=").append(Level.ALL).append("\n");
-			});
-		});
-		Optional.ofNullable(debugPackages).ifPresent(names -> {
-			Stream.of(names).forEach(name -> {
-				sb.append(name).append(".level=").append(Level.ALL).append("\n");
-			});
-		});
+		Stream.concat(Optional.ofNullable(debug).stream().flatMap(Arrays::stream).map(s -> "tigase." + s),
+					  Optional.ofNullable(debugPackages).stream().flatMap(Arrays::stream))
+				.forEach(name -> sb.append(name).append(".level=").append(Level.ALL).append("\n"));
 
 		loggers.forEach((name, props) -> {
 			props.forEach((key, value) -> {
+				log.log(Level.CONFIG, "Setting log level for loggerName: {0} to: {1}", new Object[]{name, props});
 				sb.append(name).append(".").append(key).append("=");
 				if (value instanceof Collection) {
 					Collection col = (Collection) value;
@@ -168,9 +223,13 @@ public class LoggingBean
 			}
 		}
 
-		byte[] data = sb.toString().getBytes(Charset.forName("UTF-8"));
+		byte[] data = sb.toString().getBytes(StandardCharsets.UTF_8);
 		try (ByteArrayInputStream in = new ByteArrayInputStream(data)) {
-			LogManager.getLogManager().readConfiguration(in);
+			LogManager.getLogManager().reset();
+			LogManager.getLogManager().updateConfiguration(in, (k) -> k.endsWith(".handlers")
+																	  ? ((o, n) -> (o == null ? n : o))
+																	  : ((o, n) -> n));
+			log.log(Level.CONFIG, "Initialised LogManager with configuration: {0}", new Object[]{sb});
 		} catch (IOException ex) {
 			throw new RuntimeException("Failed to load logging configuration", ex);
 		}

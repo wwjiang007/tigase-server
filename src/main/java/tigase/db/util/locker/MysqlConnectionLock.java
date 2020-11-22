@@ -15,27 +15,30 @@
  * along with this program. Look for COPYING file in the top folder.
  * If not, see http://www.gnu.org/licenses/.
  */
-package tigase.vhosts;
+
+package tigase.db.util.locker;
+
+import java.sql.Connection;
 
 /**
- * Interface required to be implemented by factories which are adding extensions to vhost items.
- * @param <T> - class of the extension which will be provided by this factory
- *
- * Class to work should be annotated with <code>@Bean</code> annotation and annotation <code>name</code> parameter
- * should be equal to the extension unique id. Moreover, <code>parent</code> parameter should be set to
- * <code>VHostItemExtensionManager.class</code> and <code>active</code> parameter should be set to <code>true</code>.
- *
+ * https://dev.mysql.com/doc/refman/8.0/en/locking-functions.html
  */
-public interface VHostItemExtensionProvider<T extends VHostItemExtension> {
+class MysqlConnectionLock
+		extends ConnectionLock {
 
-	/**
-	 * Returns unique id of the extension
-	 */
-	String getId();
+	public MysqlConnectionLock(String db_conn) {
+		super(db_conn);
+	}
 
-	/**
-	 * Returns class of the extension
-	 */
-	Class<T> getExtensionClazz();
+	@Override
+	protected boolean lockDatabase(Connection connection) {
+		String query = "SELECT GET_LOCK('" + lockName + "',1)";
+		return executeQuery(connection, query);
+	}
 
+	@Override
+	protected boolean unlockDatabase(Connection connection) {
+		String query = "SELECT RELEASE_LOCK('" + lockName + "')";
+		return executeQuery(connection, query);
+	}
 }

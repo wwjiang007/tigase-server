@@ -15,27 +15,33 @@
  * along with this program. Look for COPYING file in the top folder.
  * If not, see http://www.gnu.org/licenses/.
  */
-package tigase.vhosts;
+
+package tigase.db.util.locker;
+
+import java.sql.Connection;
+import java.util.Objects;
 
 /**
- * Interface required to be implemented by factories which are adding extensions to vhost items.
- * @param <T> - class of the extension which will be provided by this factory
- *
- * Class to work should be annotated with <code>@Bean</code> annotation and annotation <code>name</code> parameter
- * should be equal to the extension unique id. Moreover, <code>parent</code> parameter should be set to
- * <code>VHostItemExtensionManager.class</code> and <code>active</code> parameter should be set to <code>true</code>.
- *
+ * Based on https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS
  */
-public interface VHostItemExtensionProvider<T extends VHostItemExtension> {
+class PostgresqlConnectionLock
+		extends ConnectionLock {
 
-	/**
-	 * Returns unique id of the extension
-	 */
-	String getId();
+	int lockName = Math.abs(Objects.hash(super.lockName));
 
-	/**
-	 * Returns class of the extension
-	 */
-	Class<T> getExtensionClazz();
+	public PostgresqlConnectionLock(String db_conn) {
+		super(db_conn);
+	}
 
+	@Override
+	protected boolean lockDatabase(Connection connection) {
+		String query = "SELECT pg_try_advisory_lock(" + lockName + ")";
+		return executeQuery(connection, query);
+	}
+
+	@Override
+	protected boolean unlockDatabase(Connection connection) {
+		String query = "SELECT  pg_advisory_unlock(" + lockName + ")";
+		return executeQuery(connection, query);
+	}
 }
